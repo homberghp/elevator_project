@@ -1,0 +1,315 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html lang="en">
+<head>
+<title>Source code</title>
+<link rel="stylesheet" type="text/css" href="../../../../../stylesheet.css" title="Style">
+</head>
+<body>
+<div class="sourceContainer">
+<pre><span class="sourceLineNo">001</span>package nl.fontys.sevenlo.iowarrior;<a name="line.1"></a>
+<span class="sourceLineNo">002</span><a name="line.2"></a>
+<span class="sourceLineNo">003</span>import com.codemercs.iow.IowKit;<a name="line.3"></a>
+<span class="sourceLineNo">004</span>import nl.fontys.sevenlo.hwio.AbstractBitFactory;<a name="line.4"></a>
+<span class="sourceLineNo">005</span>import nl.fontys.sevenlo.hwio.BitAggregate;<a name="line.5"></a>
+<span class="sourceLineNo">006</span>import nl.fontys.sevenlo.hwio.Bit;<a name="line.6"></a>
+<span class="sourceLineNo">007</span>import nl.fontys.sevenlo.hwio.BitOps;<a name="line.7"></a>
+<span class="sourceLineNo">008</span>import nl.fontys.sevenlo.hwio.DefaultBitFactory;<a name="line.8"></a>
+<span class="sourceLineNo">009</span><a name="line.9"></a>
+<span class="sourceLineNo">010</span>/**<a name="line.10"></a>
+<span class="sourceLineNo">011</span> * Bitwise operations on an IOWarrior.<a name="line.11"></a>
+<span class="sourceLineNo">012</span> * This class supports input and ouput on the same device.<a name="line.12"></a>
+<span class="sourceLineNo">013</span> * Only iowarrior pipe 0 is used. (Simple io).<a name="line.13"></a>
+<span class="sourceLineNo">014</span> * This implementation supports IOWarrio40 only;<a name="line.14"></a>
+<span class="sourceLineNo">015</span> * Which bits are input and which are output is determined<a name="line.15"></a>
+<span class="sourceLineNo">016</span> * by the &lt;i&gt;inputMask&lt;/i&gt;.<a name="line.16"></a>
+<span class="sourceLineNo">017</span> * A 1 in the inputMask makes the bit at that position input,<a name="line.17"></a>
+<span class="sourceLineNo">018</span> * a 0 makes the bit output. See the 1 and 0 as mnemonic for<a name="line.18"></a>
+<span class="sourceLineNo">019</span> * input and output.<a name="line.19"></a>
+<span class="sourceLineNo">020</span> * At construction time all inputbits are set high (1) (high impedance plus<a name="line.20"></a>
+<span class="sourceLineNo">021</span> * pullup in the hardware), all outputbits are set to low (0).<a name="line.21"></a>
+<span class="sourceLineNo">022</span> *<a name="line.22"></a>
+<span class="sourceLineNo">023</span> * For debugging purposes, bit 0 of port 3 of the IOWarrior40<a name="line.23"></a>
+<span class="sourceLineNo">024</span> * is toggled on each write.<a name="line.24"></a>
+<span class="sourceLineNo">025</span> *<a name="line.25"></a>
+<span class="sourceLineNo">026</span> * @author Pieter van den Hombergh (P.vandenHombergh at fontys.nl)<a name="line.26"></a>
+<span class="sourceLineNo">027</span> */<a name="line.27"></a>
+<span class="sourceLineNo">028</span>public final class IOWarrior implements BitAggregate {<a name="line.28"></a>
+<span class="sourceLineNo">029</span><a name="line.29"></a>
+<span class="sourceLineNo">030</span>    //@GuardedBy("readLock")<a name="line.30"></a>
+<span class="sourceLineNo">031</span>    /** reference to handle from connector  */<a name="line.31"></a>
+<span class="sourceLineNo">032</span>    private final long handle;<a name="line.32"></a>
+<span class="sourceLineNo">033</span>    /** input to destinguish between in (1) and out (0). */<a name="line.33"></a>
+<span class="sourceLineNo">034</span>    private int inputMask;<a name="line.34"></a>
+<span class="sourceLineNo">035</span>    /** helps in serialized access to lastRead .*/<a name="line.35"></a>
+<span class="sourceLineNo">036</span>    private final Object readLock = new Object();<a name="line.36"></a>
+<span class="sourceLineNo">037</span>    /** helps in serialized access to shadow. */<a name="line.37"></a>
+<span class="sourceLineNo">038</span>    private final Object writeLock = new Object();<a name="line.38"></a>
+<span class="sourceLineNo">039</span>    //@GuardedBy("writeLock")<a name="line.39"></a>
+<span class="sourceLineNo">040</span>    /** the last value sent to the hardware output. */<a name="line.40"></a>
+<span class="sourceLineNo">041</span>    private volatile int shadow = 0;<a name="line.41"></a>
+<span class="sourceLineNo">042</span>    //@GuardedBy("writeLock")<a name="line.42"></a>
+<span class="sourceLineNo">043</span>    /** The last read (cached) value in the poll loop. */<a name="line.43"></a>
+<span class="sourceLineNo">044</span>    private volatile int lastRead = 0;<a name="line.44"></a>
+<span class="sourceLineNo">045</span>    /** blink byte 4. */<a name="line.45"></a>
+<span class="sourceLineNo">046</span>    //@GuardedBy("writeLock")<a name="line.46"></a>
+<span class="sourceLineNo">047</span>    private int blinker = 0;<a name="line.47"></a>
+<span class="sourceLineNo">048</span>    /** The connected bits */<a name="line.48"></a>
+<span class="sourceLineNo">049</span>    private final Bit[] bit;<a name="line.49"></a>
+<span class="sourceLineNo">050</span>    public static final int SUPPORTED_BITS = 32;<a name="line.50"></a>
+<span class="sourceLineNo">051</span><a name="line.51"></a>
+<span class="sourceLineNo">052</span>    /**<a name="line.52"></a>
+<span class="sourceLineNo">053</span>     * Create an  IoWarrior connection instance and uses a BitFactory<a name="line.53"></a>
+<span class="sourceLineNo">054</span>     * to create the IO Bits.<a name="line.54"></a>
+<span class="sourceLineNo">055</span>     * @param hnd handle to identify device to library<a name="line.55"></a>
+<span class="sourceLineNo">056</span>     * @param im inputMask<a name="line.56"></a>
+<span class="sourceLineNo">057</span>     * @param fact BitFactory<a name="line.57"></a>
+<span class="sourceLineNo">058</span>     */<a name="line.58"></a>
+<span class="sourceLineNo">059</span>    public IOWarrior(final long hnd, final int im,<a name="line.59"></a>
+<span class="sourceLineNo">060</span>            final AbstractBitFactory fact) {<a name="line.60"></a>
+<span class="sourceLineNo">061</span>        this.handle = hnd;<a name="line.61"></a>
+<span class="sourceLineNo">062</span>        this.inputMask = im;<a name="line.62"></a>
+<span class="sourceLineNo">063</span>        this.shadow = inputMask;<a name="line.63"></a>
+<span class="sourceLineNo">064</span>        bit = new Bit[SUPPORTED_BITS];<a name="line.64"></a>
+<span class="sourceLineNo">065</span>        for (int i = 0; i &lt; bit.length; i++) {<a name="line.65"></a>
+<span class="sourceLineNo">066</span>            if ((inputMask &amp; (1 &lt;&lt; i)) != 0) {<a name="line.66"></a>
+<span class="sourceLineNo">067</span>                bit[i] = fact.createInputBit(i);<a name="line.67"></a>
+<span class="sourceLineNo">068</span>            } else {<a name="line.68"></a>
+<span class="sourceLineNo">069</span>                bit[i] = fact.createOutputBit(this, i);<a name="line.69"></a>
+<span class="sourceLineNo">070</span>            }<a name="line.70"></a>
+<span class="sourceLineNo">071</span>        }<a name="line.71"></a>
+<span class="sourceLineNo">072</span>        write(shadow);<a name="line.72"></a>
+<span class="sourceLineNo">073</span>    }<a name="line.73"></a>
+<span class="sourceLineNo">074</span><a name="line.74"></a>
+<span class="sourceLineNo">075</span>    /**<a name="line.75"></a>
+<span class="sourceLineNo">076</span>     * Create an  IoWarrior connection instance with default Bit instances.<a name="line.76"></a>
+<span class="sourceLineNo">077</span>     * @param hnd handle to idetify device to library<a name="line.77"></a>
+<span class="sourceLineNo">078</span>     * @param im inputMask<a name="line.78"></a>
+<span class="sourceLineNo">079</span>     */<a name="line.79"></a>
+<span class="sourceLineNo">080</span>    public IOWarrior(final long hnd, final int im) {<a name="line.80"></a>
+<span class="sourceLineNo">081</span>        this(hnd, im, new DefaultBitFactory());<a name="line.81"></a>
+<span class="sourceLineNo">082</span>    }<a name="line.82"></a>
+<span class="sourceLineNo">083</span><a name="line.83"></a>
+<span class="sourceLineNo">084</span>    /**<a name="line.84"></a>
+<span class="sourceLineNo">085</span>     * Read the iowarrior bits.<a name="line.85"></a>
+<span class="sourceLineNo">086</span>     *<a name="line.86"></a>
+<span class="sourceLineNo">087</span>     * This is a blocking read. The IOWarrior library will<a name="line.87"></a>
+<span class="sourceLineNo">088</span>     * only return if there were any changes in the<a name="line.88"></a>
+<span class="sourceLineNo">089</span>     * inputs. For event driven operation, this<a name="line.89"></a>
+<span class="sourceLineNo">090</span>     * should be called on a seperate input thread, such as returned<a name="line.90"></a>
+<span class="sourceLineNo">091</span>     * by {@link #createPollThread}.<a name="line.91"></a>
+<span class="sourceLineNo">092</span>     *<a name="line.92"></a>
+<span class="sourceLineNo">093</span>     * @return result which is 32 bits of new value.<a name="line.93"></a>
+<span class="sourceLineNo">094</span>     */<a name="line.94"></a>
+<span class="sourceLineNo">095</span>    public int read() {<a name="line.95"></a>
+<span class="sourceLineNo">096</span>        int[] rdata = IowKit.read(handle, 0, WARRIOR_BUF_SIZE);<a name="line.96"></a>
+<span class="sourceLineNo">097</span>        int result = 0;<a name="line.97"></a>
+<span class="sourceLineNo">098</span>        if (rdata.length &gt; 0) {<a name="line.98"></a>
+<span class="sourceLineNo">099</span>            // discard highest byte<a name="line.99"></a>
+<span class="sourceLineNo">100</span>            for (int i = rdata.length - 2; i &gt; 0; i--) {<a name="line.100"></a>
+<span class="sourceLineNo">101</span>                result &lt;&lt;= BYTE_BIT_SHIFT;<a name="line.101"></a>
+<span class="sourceLineNo">102</span>                result |= rdata[i] &amp; LOWBYTE;<a name="line.102"></a>
+<span class="sourceLineNo">103</span>            }<a name="line.103"></a>
+<span class="sourceLineNo">104</span>        }<a name="line.104"></a>
+<span class="sourceLineNo">105</span>        // save for readFast<a name="line.105"></a>
+<span class="sourceLineNo">106</span>        synchronized (this.readLock) {<a name="line.106"></a>
+<span class="sourceLineNo">107</span>            lastRead = result;<a name="line.107"></a>
+<span class="sourceLineNo">108</span>            return lastRead;<a name="line.108"></a>
+<span class="sourceLineNo">109</span>        }<a name="line.109"></a>
+<span class="sourceLineNo">110</span>    }<a name="line.110"></a>
+<span class="sourceLineNo">111</span><a name="line.111"></a>
+<span class="sourceLineNo">112</span>    /**<a name="line.112"></a>
+<span class="sourceLineNo">113</span>     * Read the newest value from cache.<a name="line.113"></a>
+<span class="sourceLineNo">114</span>     * @return the latest value read by read().<a name="line.114"></a>
+<span class="sourceLineNo">115</span>     * @deprecated use lastRead() method instead.<a name="line.115"></a>
+<span class="sourceLineNo">116</span>     */<a name="line.116"></a>
+<span class="sourceLineNo">117</span>    @Deprecated<a name="line.117"></a>
+<span class="sourceLineNo">118</span>    public int cachedRead() {<a name="line.118"></a>
+<span class="sourceLineNo">119</span>        return lastRead();<a name="line.119"></a>
+<span class="sourceLineNo">120</span>    }<a name="line.120"></a>
+<span class="sourceLineNo">121</span><a name="line.121"></a>
+<span class="sourceLineNo">122</span>    /**<a name="line.122"></a>
+<span class="sourceLineNo">123</span>     * Writes the output with all input bits set high.<a name="line.123"></a>
+<span class="sourceLineNo">124</span>     * Writes only the lowest 24 bits as these are the only ones<a name="line.124"></a>
+<span class="sourceLineNo">125</span>     * connected to the output connector of the iowarrior.<a name="line.125"></a>
+<span class="sourceLineNo">126</span>     * The work is delegated to writeMasked with all bits to 1.<a name="line.126"></a>
+<span class="sourceLineNo">127</span>     * @param value to write.<a name="line.127"></a>
+<span class="sourceLineNo">128</span>     */<a name="line.128"></a>
+<span class="sourceLineNo">129</span>    public void write(int value) {<a name="line.129"></a>
+<span class="sourceLineNo">130</span>        writeMasked(~0, value);<a name="line.130"></a>
+<span class="sourceLineNo">131</span>    }<a name="line.131"></a>
+<span class="sourceLineNo">132</span><a name="line.132"></a>
+<span class="sourceLineNo">133</span>    /**<a name="line.133"></a>
+<span class="sourceLineNo">134</span>     * Specify the inputy mask to use.<a name="line.134"></a>
+<span class="sourceLineNo">135</span>     * @param ipm the input mask.<a name="line.135"></a>
+<span class="sourceLineNo">136</span>     */<a name="line.136"></a>
+<span class="sourceLineNo">137</span>    public void setInputMask(int ipm) {<a name="line.137"></a>
+<span class="sourceLineNo">138</span>        this.inputMask = ipm;<a name="line.138"></a>
+<span class="sourceLineNo">139</span>        writeMasked(ipm, ipm);<a name="line.139"></a>
+<span class="sourceLineNo">140</span>    }<a name="line.140"></a>
+<span class="sourceLineNo">141</span>    /**<a name="line.141"></a>
+<span class="sourceLineNo">142</span>     * The iowarrior has a command byte and 4 data bytes<a name="line.142"></a>
+<span class="sourceLineNo">143</span>     * for a total of 5.<a name="line.143"></a>
+<span class="sourceLineNo">144</span>     */<a name="line.144"></a>
+<span class="sourceLineNo">145</span>    private static final int WARRIOR_BUF_SIZE = 5;<a name="line.145"></a>
+<span class="sourceLineNo">146</span>    /** Isolate the low 8 bits of an int. */<a name="line.146"></a>
+<span class="sourceLineNo">147</span>    private static final int LOWBYTE = 255;<a name="line.147"></a>
+<span class="sourceLineNo">148</span>    /** The amount of bits to shift for a byte. */<a name="line.148"></a>
+<span class="sourceLineNo">149</span>    private static final int BYTE_BIT_SHIFT = 8;<a name="line.149"></a>
+<span class="sourceLineNo">150</span><a name="line.150"></a>
+<span class="sourceLineNo">151</span>    /**<a name="line.151"></a>
+<span class="sourceLineNo">152</span>     * WriteMasked as defined in the api of intwriter.<a name="line.152"></a>
+<span class="sourceLineNo">153</span>     * This version does all the work and is threadsafe.<a name="line.153"></a>
+<span class="sourceLineNo">154</span>     *<a name="line.154"></a>
+<span class="sourceLineNo">155</span>     * @param mask the bits that should be kept safe.<a name="line.155"></a>
+<span class="sourceLineNo">156</span>     * @param value the 'set' of  value bits.<a name="line.156"></a>
+<span class="sourceLineNo">157</span>     */<a name="line.157"></a>
+<span class="sourceLineNo">158</span>    public void writeMasked(int mask, int value) {<a name="line.158"></a>
+<span class="sourceLineNo">159</span>        int[] writeBuffer = null;<a name="line.159"></a>
+<span class="sourceLineNo">160</span>        int newShadow;<a name="line.160"></a>
+<span class="sourceLineNo">161</span>        // calculate stack local stuff from shadow and new value<a name="line.161"></a>
+<span class="sourceLineNo">162</span>        // using mask<a name="line.162"></a>
+<span class="sourceLineNo">163</span>        synchronized (this.writeLock) {<a name="line.163"></a>
+<span class="sourceLineNo">164</span>            newShadow = (shadow &amp; ~mask) | (value &amp; mask);<a name="line.164"></a>
+<span class="sourceLineNo">165</span>            if (newShadow != shadow) {<a name="line.165"></a>
+<span class="sourceLineNo">166</span>                shadow = newShadow;<a name="line.166"></a>
+<span class="sourceLineNo">167</span>                writeBuffer = new int[WARRIOR_BUF_SIZE];<a name="line.167"></a>
+<span class="sourceLineNo">168</span>                writeBuffer[0] = 0;<a name="line.168"></a>
+<span class="sourceLineNo">169</span>                writeBuffer[writeBuffer.length - 1] = blinker;<a name="line.169"></a>
+<span class="sourceLineNo">170</span>                blinker ^= 1; // toggle lowest bit of port 3.<a name="line.170"></a>
+<span class="sourceLineNo">171</span>            }<a name="line.171"></a>
+<span class="sourceLineNo">172</span>        }<a name="line.172"></a>
+<span class="sourceLineNo">173</span><a name="line.173"></a>
+<span class="sourceLineNo">174</span>        // writing to the hardware is done unsynchronized.<a name="line.174"></a>
+<span class="sourceLineNo">175</span>        // newShadow and writebuffer are local vars, thus thread safe.<a name="line.175"></a>
+<span class="sourceLineNo">176</span>        if (writeBuffer != null) {<a name="line.176"></a>
+<span class="sourceLineNo">177</span><a name="line.177"></a>
+<span class="sourceLineNo">178</span>            for (int i = 1; i &lt; writeBuffer.length - 1; i++) {<a name="line.178"></a>
+<span class="sourceLineNo">179</span>                writeBuffer[i] = newShadow &amp; LOWBYTE;<a name="line.179"></a>
+<span class="sourceLineNo">180</span>                newShadow &gt;&gt;= BYTE_BIT_SHIFT;<a name="line.180"></a>
+<span class="sourceLineNo">181</span>            }<a name="line.181"></a>
+<span class="sourceLineNo">182</span><a name="line.182"></a>
+<span class="sourceLineNo">183</span>            // assume that number of bytes written is correct.<a name="line.183"></a>
+<span class="sourceLineNo">184</span>            // so no test of result<a name="line.184"></a>
+<span class="sourceLineNo">185</span>            IowKit.write(handle, 0, writeBuffer);<a name="line.185"></a>
+<span class="sourceLineNo">186</span>        }<a name="line.186"></a>
+<span class="sourceLineNo">187</span>    }<a name="line.187"></a>
+<span class="sourceLineNo">188</span><a name="line.188"></a>
+<span class="sourceLineNo">189</span>    /**<a name="line.189"></a>
+<span class="sourceLineNo">190</span>     * Get a bit through ist number.<a name="line.190"></a>
+<span class="sourceLineNo">191</span>     * @param i the bit  number<a name="line.191"></a>
+<span class="sourceLineNo">192</span>     * @return the bit<a name="line.192"></a>
+<span class="sourceLineNo">193</span>     */<a name="line.193"></a>
+<span class="sourceLineNo">194</span>    public BitOps getBit(int i) {<a name="line.194"></a>
+<span class="sourceLineNo">195</span>        return bit[i];<a name="line.195"></a>
+<span class="sourceLineNo">196</span>    }<a name="line.196"></a>
+<span class="sourceLineNo">197</span><a name="line.197"></a>
+<span class="sourceLineNo">198</span>    /**<a name="line.198"></a>
+<span class="sourceLineNo">199</span>     * Retrun debug info.<a name="line.199"></a>
+<span class="sourceLineNo">200</span>     * @return a description of the warrior and ist state.<a name="line.200"></a>
+<span class="sourceLineNo">201</span>     */<a name="line.201"></a>
+<span class="sourceLineNo">202</span>    @Override<a name="line.202"></a>
+<span class="sourceLineNo">203</span>    public String toString() {<a name="line.203"></a>
+<span class="sourceLineNo">204</span>        return IOWarriorConnector.getInstance().getSerialNr(handle) +<a name="line.204"></a>
+<span class="sourceLineNo">205</span>                " im=" + inputMask + " read=" + lastRead + " shadow=" + shadow;<a name="line.205"></a>
+<span class="sourceLineNo">206</span>    }<a name="line.206"></a>
+<span class="sourceLineNo">207</span><a name="line.207"></a>
+<span class="sourceLineNo">208</span>    /**<a name="line.208"></a>
+<span class="sourceLineNo">209</span>     * Get the number of supported bits.<a name="line.209"></a>
+<span class="sourceLineNo">210</span>     * @return the size<a name="line.210"></a>
+<span class="sourceLineNo">211</span>     */<a name="line.211"></a>
+<span class="sourceLineNo">212</span>    public int size() {<a name="line.212"></a>
+<span class="sourceLineNo">213</span>        return SUPPORTED_BITS;<a name="line.213"></a>
+<span class="sourceLineNo">214</span>    }<a name="line.214"></a>
+<span class="sourceLineNo">215</span><a name="line.215"></a>
+<span class="sourceLineNo">216</span>    /**<a name="line.216"></a>
+<span class="sourceLineNo">217</span>     * Retrun the input mask.<a name="line.217"></a>
+<span class="sourceLineNo">218</span>     * @return the input mask<a name="line.218"></a>
+<span class="sourceLineNo">219</span>     */<a name="line.219"></a>
+<span class="sourceLineNo">220</span>    public int getInputMask() {<a name="line.220"></a>
+<span class="sourceLineNo">221</span>        return this.inputMask;<a name="line.221"></a>
+<span class="sourceLineNo">222</span>    }<a name="line.222"></a>
+<span class="sourceLineNo">223</span><a name="line.223"></a>
+<span class="sourceLineNo">224</span>    /**<a name="line.224"></a>
+<span class="sourceLineNo">225</span>     * Return the shadow valaue.<a name="line.225"></a>
+<span class="sourceLineNo">226</span>     * @return the shadow value.<a name="line.226"></a>
+<span class="sourceLineNo">227</span>     */<a name="line.227"></a>
+<span class="sourceLineNo">228</span>    public int lastWritten() {<a name="line.228"></a>
+<span class="sourceLineNo">229</span>        return shadow;<a name="line.229"></a>
+<span class="sourceLineNo">230</span>    }<a name="line.230"></a>
+<span class="sourceLineNo">231</span><a name="line.231"></a>
+<span class="sourceLineNo">232</span>    /**<a name="line.232"></a>
+<span class="sourceLineNo">233</span>     * Non blocking read of last received value.<a name="line.233"></a>
+<span class="sourceLineNo">234</span>     * Note that the value may be stale.<a name="line.234"></a>
+<span class="sourceLineNo">235</span>     * @return the last value.<a name="line.235"></a>
+<span class="sourceLineNo">236</span>     */<a name="line.236"></a>
+<span class="sourceLineNo">237</span>    public int lastRead() {<a name="line.237"></a>
+<span class="sourceLineNo">238</span>        synchronized (this.readLock) {<a name="line.238"></a>
+<span class="sourceLineNo">239</span>            return shadow;<a name="line.239"></a>
+<span class="sourceLineNo">240</span>        }<a name="line.240"></a>
+<span class="sourceLineNo">241</span>    }<a name="line.241"></a>
+<span class="sourceLineNo">242</span>    <a name="line.242"></a>
+<span class="sourceLineNo">243</span>}<a name="line.243"></a>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+</pre>
+</div>
+</body>
+</html>
